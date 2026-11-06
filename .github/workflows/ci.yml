@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: off
+
+jobs:
+  test:
+    name: test ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runs-on: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.3'
+          check-latest: true
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: Test (race + coverage, corpus replayed)
+        run: go test -race -covermode=atomic -coverprofile=cover.out ./...
+      - name: Enforce coverage gate
+        run: |
+          pct=$(go tool cover -func=cover.out | awk '/^total:/ {sub(/%/,"",$3); print $3}')
+          echo "total coverage: ${pct}%"
+          awk -v p="$pct" 'BEGIN { exit (p+0 >= 100.0) ? 0 : 1 }'
+      - name: Short fuzz of every entry point
+        run: |
+          for f in FuzzConn FuzzSpan FuzzConnWriteFailure; do
+            go test -run '^$' -fuzz "^${f}\$" -fuzztime 20s .
+          done
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.3'
+          check-latest: true
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
