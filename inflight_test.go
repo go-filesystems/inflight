@@ -439,3 +439,123 @@ func TestFSLock(t *testing.T) {
 		unblock2()
 	}
 }
+
+// writeLog records the size of each Write and whether it was handed the very
+// slice the reply was built in.
+type writeLog struct {
+	lockedBuf
+	mu2   sync.Mutex
+	sizes []int
+	first []*byte
+}
+
+func (w *writeLog) Write(p []byte) (int, error) {
+	w.mu2.Lock()
+	w.sizes = append(w.sizes, len(p))
+	w.first = append(w.first, &p[0])
+	w.mu2.Unlock()
+	return w.lockedBuf.Write(p)
+}
+
+// queueBehindGate makes request 0 wait for gate and requests 1..n finish at
+// once, so that when the gate opens n+1 replies are ready together.
+func queueBehindGate(c *Conn, gate chan struct{}, n int, reply func(i int) []byte) {
+	sl, _ := c.Begin()
+	c.Go(sl, ReadRange("a", 0, 1), func(*Slot) ([]byte, error) { <-gate; return reply(0), nil })
+	for i := 1; i <= n; i++ {
+		sl, _ := c.Begin()
+		c.Go(sl, ReadRange("a", 0, 1), func(*Slot) ([]byte, error) { return reply(i), nil })
+	}
+	time.Sleep(20 * time.Millisecond)
+}
+
+func four(i int) []byte { return []byte{0, 0, 0, byte(i)} }
+
+func TestBatchSendsReadyRepliesInOneWrite(t *testing.T) {
+	w := &writeLog{}
+	c, _ := mustPool(t, 8).NewConn(w, InOrder, 8)
+	c.SetBatch(DefaultBatch)
+	gate := make(chan struct{})
+	queueBehindGate(c, gate, 4, four)
+	close(gate)
+	c.Wait()
+	if len(w.sizes) != 1 || w.sizes[0] != 20 {
+		t.Fatalf("write sizes %v, want one of 20", w.sizes)
+	}
+	for i, g := range w.replies() {
+		if g != uint32(i) {
+			t.Fatalf("replies %v are not in request order", w.replies())
+		}
+	}
+}
+
+func TestBatchIsBoundedAndALoneBigReplyIsNotCopied(t *testing.T) {
+	w := &writeLog{}
+	c, _ := mustPool(t, 8).NewConn(w, InOrder, 8)
+	c.SetBatch(8)
+	big := make([]byte, 12)
+	gate := make(chan struct{})
+	queueBehindGate(c, gate, 5, func(i int) []byte {
+		if i == 5 {
+			return big
+		}
+		return four(i)
+	})
+	close(gate)
+	c.Wait()
+	// 0+1 and 2+3 fill a batch of 8; 4 (4 bytes) cannot join 5 (12): the big
+	// reply leaves alone.
+	want := []int{8, 8, 4, 12}
+	if len(w.sizes) != len(want) {
+		t.Fatalf("write sizes %v, want %v", w.sizes, want)
+	}
+	for i := range want {
+		if w.sizes[i] != want[i] {
+			t.Fatalf("write sizes %v, want %v", w.sizes, want)
+		}
+	}
+	if w.first[3] != &big[0] {
+		t.Error("a lone reply was copied")
+	}
+}
+
+func TestBatchSkipsRequestsWithNoReply(t *testing.T) {
+	w := &writeLog{}
+	c, _ := mustPool(t, 8).NewConn(w, InOrder, 8)
+	c.SetBatch(DefaultBatch)
+	gate := make(chan struct{})
+	queueBehindGate(c, gate, 2, func(i int) []byte {
+		if i == 1 {
+			return nil
+		}
+		return four(i)
+	})
+	close(gate)
+	c.Wait()
+	if len(w.sizes) != 1 || w.sizes[0] != 8 {
+		t.Fatalf("write sizes %v, want one of 8", w.sizes)
+	}
+	// A lone request with no reply writes nothing.
+	sl, _ := c.Begin()
+	c.Barrier(sl, func(*Slot) ([]byte, error) { return nil, nil })
+	if len(w.sizes) != 1 {
+		t.Fatalf("write sizes %v", w.sizes)
+	}
+}
+
+func TestBatchWriteErrorStillRetiresEverySlot(t *testing.T) {
+	w := &failingWriter{fail: errors.New("broken pipe")}
+	p := mustPool(t, 4)
+	c, _ := p.NewConn(w, InOrder, 4)
+	c.SetBatch(DefaultBatch)
+	gate := make(chan struct{})
+	queueBehindGate(c, gate, 3, four)
+	close(gate)
+	c.Wait()
+	if !errors.Is(c.Err(), w.fail) {
+		t.Fatalf("Err = %v", c.Err())
+	}
+	if n := len(p.tokens); n != 0 {
+		t.Fatalf("%d tokens still held", n)
+	}
+}
