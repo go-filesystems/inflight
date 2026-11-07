@@ -21,6 +21,10 @@ conn.Wait()
   keeps them, as with OpenSSH sftp-server, knfsd and Samba.
 - **Reply order**: `InOrder` (SFTP, whose OpenSSH client refuses to resume on
   reordered replies) or `AnyOrder` (ONC RPC xid, SMB2 MessageId).
+- **Batching** (`Conn.SetBatch`, `InOrder` only, off by default): replies ready
+  together at the head of the queue leave in one `Write` of at most the given
+  bytes (`DefaultBatch` = 256 KiB). Slots are released only after the write, so
+  the pool's budget is unchanged; the one extra buffer is at most the bound.
 - **Ordering**: two requests on one key with overlapping ranges, a write among
   them, run in arrival order, across every connection of the pool.
 - **Barriers**: wait for everything in flight, run alone.
