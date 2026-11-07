@@ -53,7 +53,31 @@ type Conn struct {
 	qmu      sync.Mutex
 	queue    []*Slot
 	flushing bool // a goroutine is writing replies from the head of queue
+
+	// batchMax bounds the bytes of one coalesced Write (see [Conn.SetBatch]);
+	// batch and buf belong to the goroutine that is flushing.
+	batchMax int
+	batch    []*Slot
+	buf      []byte
 }
+
+// DefaultBatch is a reasonable bound for [Conn.SetBatch]: 256 KiB, eight
+// 32 KiB SSH packets.
+const DefaultBatch = 256 << 10
+
+// SetBatch makes an InOrder connection coalesce replies: the replies that are
+// ready together at the head of the queue leave in ONE Write of at most max
+// bytes (a single reply larger than max still leaves alone, uncopied). A stream
+// whose Write has a fixed cost (a syscall, an encrypted packet) pays it once
+// per batch instead of once per reply. The default, 0, is one Write per reply.
+//
+// Memory: the replies of a batch are still held by their slots, and a slot is
+// released only after its reply is written, so the pool's budget is unchanged;
+// the connection adds one buffer of at most max bytes, made when the first
+// batch of several replies needs it.
+//
+// Call it before the first Begin.
+func (c *Conn) SetBatch(max int) { c.batchMax = max }
 
 // NewConn returns a connection that writes its replies to w in the given
 // order and has at most max requests in flight, within the pool's budget. max
@@ -192,16 +216,59 @@ func (c *Conn) finish(sl *Slot, run Run) {
 	}
 	c.flushing = true
 	for len(c.queue) > 0 && c.queue[0].done {
-		h := c.queue[0]
-		c.queue = c.queue[1:]
+		c.batch = c.batch[:0]
+		size := 0
+		for len(c.queue) > 0 && c.queue[0].done {
+			h := c.queue[0]
+			if len(c.batch) > 0 && size+len(h.reply) > c.batchMax {
+				break
+			}
+			c.queue = c.queue[1:]
+			c.batch = append(c.batch, h)
+			size += len(h.reply)
+		}
 		// The write may block on a peer that is slow to read; the lock is not
 		// held across it, so the reader still enqueues.
 		c.qmu.Unlock()
-		c.write(h, h.reply)
+		c.writeBatch(size)
 		c.qmu.Lock()
 	}
 	c.flushing = false
 	c.qmu.Unlock()
+}
+
+// writeBatch sends the replies in c.batch (consecutive, in order) and retires
+// their requests. One reply is one Write of the reply as it is, with no copy;
+// several are copied end to end into one buffer of at most the batch bound and
+// sent in one Write. The slots, and the tokens, are released only after the
+// Write, so the replies held never exceed what the budget already counts; the
+// one buffer is the only addition.
+func (c *Conn) writeBatch(size int) {
+	if len(c.batch) == 1 {
+		c.send(c.batch[0].reply)
+	} else {
+		if cap(c.buf) < size {
+			c.buf = make([]byte, 0, size)
+		}
+		c.buf = c.buf[:0]
+		for _, h := range c.batch {
+			c.buf = append(c.buf, h.reply...)
+		}
+		c.send(c.buf)
+	}
+	for i, h := range c.batch {
+		h.reply = nil
+		c.release(h)
+		c.wg.Done()
+		c.batch[i] = nil
+	}
+}
+
+// send writes p unless there is nothing to write (a request with no reply).
+func (c *Conn) send(p []byte) {
+	if len(p) > 0 {
+		c.w.Write(p)
+	}
 }
 
 // write sends one reply and retires its request.
