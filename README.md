@@ -28,6 +28,12 @@ conn.Wait()
 - **Ordering**: two requests on one key with overlapping ranges, a write among
   them, run in arrival order, across every connection of the pool.
 - **Barriers**: wait for everything in flight, run alone.
+- **Ordered** (`inflight.Ordered(ctx, n, workers, work, emit)`): the batch
+  counterpart for n independent items known up front (blocks, slides, files):
+  `work` runs on at most `workers` goroutines, `emit` receives the results in
+  index order from the caller's goroutine, at most `workers` results exist at
+  once whatever n is, the first error in index order stops the run, and no
+  goroutine outlives the call. Memory is bounded by the workers, not by n.
 - **FSLock**: the go-filesystems/interface concurrency contract as a lock.
 
 Extracted from go-filesystems/sftp v0.9.0. 100% statement coverage, race
