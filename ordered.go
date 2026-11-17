@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrBounds is returned by [Ordered] when n is negative or workers is below 1:
@@ -64,19 +65,31 @@ func Ordered[T any](ctx context.Context, n, workers int, work func(ctx context.C
 	for k := range ring {
 		ring[k] = make(chan result, 1) // a worker never blocks on its send
 	}
-	wg.Go(func() {
-		for i := range n {
-			select {
-			case tokens <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			wg.Go(func() {
+	// workers goroutines, started once: each takes a token, then claims the
+	// next unclaimed index. Tokens first, index second, so the claimed indices
+	// are always the lowest unclaimed ones and the item the caller waits for is
+	// never starved of a token by a later one. No goroutine and no allocation
+	// per item, and no producer to wake: a worker that finishes an item goes
+	// straight to the next one.
+	var next atomic.Int64
+	for range workers {
+		wg.Go(func() {
+			for {
+				select {
+				case tokens <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				c := next.Add(1) - 1
+				if c >= int64(n) || ctx.Err() != nil {
+					return
+				}
+				i := int(c)
 				v, err := work(ctx, i)
 				ring[i%workers] <- result{v, err}
-			})
-		}
-	})
+			}
+		})
+	}
 	for i := range n {
 		var r result
 		select {
