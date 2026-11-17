@@ -68,7 +68,7 @@ func TestCacheGrowsOnlyWhenAnEvictedKeyReturns(t *testing.T) {
 	if c.Cap() <= 40 || c.Cap() > 400 {
 		t.Fatalf("Cap = %d, want grown above 40 and at most 400", c.Cap())
 	}
-	if c.Len() > 40 && int64(c.Len())*10 > c.Cap() {
+	if int64(c.Len())*10 > c.Cap() {
 		t.Errorf("holds %d entries over a %d byte bound", c.Len(), c.Cap())
 	}
 	// At the maximum it stays.
@@ -103,24 +103,24 @@ func TestCacheSetMaxShrinksButNotBelowStart(t *testing.T) {
 	}
 }
 
-func TestCacheReplaceKeepsAgeAndAccounting(t *testing.T) {
+func TestCacheReplaceMakesTheNewestAndKeepsAccounting(t *testing.T) {
 	c := NewCache[int, []byte](30, 30, bytesOf)
 	c.Put(1, blk(10))
 	c.Put(2, blk(10))
-	c.Put(1, blk(20)) // replaced, now 20 + 10 = 30
-	if c.Len() != 2 {
-		t.Fatalf("Len = %d", c.Len())
+	c.Put(1, blk(20)) // replaced: now the newest, 10 + 20 = 30
+	if c.Len() != 2 || c.used != 30 {
+		t.Fatalf("Len = %d used = %d", c.Len(), c.used)
 	}
-	c.Put(3, blk(10)) // 40 > 30: key 1 is the oldest and goes
-	if _, ok := c.Get(1); ok {
-		t.Error("the replaced key kept a younger age")
+	c.Put(3, blk(10)) // 40 > 30: key 2 is now the oldest and goes
+	if _, ok := c.Get(2); ok {
+		t.Error("the oldest key survived")
 	}
-	if _, ok := c.Get(2); !ok {
-		t.Error("key 2 lost")
+	if v, ok := c.Get(1); !ok || len(v) != 20 {
+		t.Error("the replaced key was lost, or kept its old value")
 	}
-	c.Put(2, blk(30)) // replaced by the whole bound: everything else goes, itself stays
-	if _, ok := c.Get(2); !ok || c.Len() != 1 {
-		t.Errorf("a replacement that fills the bound: len %d", c.Len())
+	c.Put(1, blk(30)) // replaced by the whole bound: everything else goes
+	if v, ok := c.Get(1); !ok || len(v) != 30 || c.Len() != 1 || c.used != 30 {
+		t.Errorf("a replacement that fills the bound: len %d used %d", c.Len(), c.used)
 	}
 }
 
@@ -202,20 +202,28 @@ func FuzzCache(f *testing.F) {
 			switch {
 			case n%5 == 0:
 				c.SetMax(int64(n))
+			case n%7 == 0:
+				c.Put(k, blk(n%97)) // a replacement, whatever is cached
 			default:
 				if _, ok := c.Get(k); !ok {
 					c.Put(k, blk(n%97))
 				}
 			}
 			var sum int64
-			for _, v := range c.m {
-				sum += int64(len(v))
+			for _, e := range c.m {
+				sum += int64(len(e.v))
+				if e.cost != int64(len(e.v)) {
+					t.Fatalf("entry cost %d, value %d bytes", e.cost, len(e.v))
+				}
 			}
 			if sum != c.used || len(c.m) != len(c.keys) {
 				t.Fatalf("accounting: used %d, held %d, %d entries, %d keys", c.used, sum, len(c.m), len(c.keys))
 			}
-			if c.Len() > 1 && c.used > c.cap {
+			if c.used > c.cap {
 				t.Fatalf("%d bytes over a %d bound with %d entries", c.used, c.cap, c.Len())
+			}
+			if len(c.ghostQ) > c.ghostCap {
+				t.Fatalf("ghost queue %d over its cap %d", len(c.ghostQ), c.ghostCap)
 			}
 			if c.cap > c.capMax || c.cap < c.start {
 				t.Fatalf("cap %d outside [%d,%d]", c.cap, c.start, c.capMax)
@@ -224,15 +232,55 @@ func FuzzCache(f *testing.F) {
 	})
 }
 
-func TestCacheSoleEntryReplacedByOneOverTheBound(t *testing.T) {
+func TestCacheOversizedReplacementRemovesTheOldValue(t *testing.T) {
 	c := NewCache[int, []byte](30, 30, bytesOf)
 	c.Put(1, blk(10))
-	c.Put(1, blk(40)) // a replacement is kept, alone, even over the bound
-	if v, ok := c.Get(1); !ok || len(v) != 40 || c.Len() != 1 {
-		t.Errorf("sole entry: ok %v len %d", ok, c.Len())
-	}
-	c.Put(2, blk(5)) // the next Put evicts it
+	c.Put(2, blk(10))
+	c.Put(1, blk(40)) // too big to store: the stale value under key 1 must not be served
 	if _, ok := c.Get(1); ok {
-		t.Error("the over-bound entry survived a Put")
+		t.Error("a stale value is served after an oversized replacement")
+	}
+	if _, ok := c.Get(2); !ok || c.Len() != 1 || c.used != 10 {
+		t.Errorf("an oversized replacement disturbed the others: len %d used %d", c.Len(), c.used)
+	}
+}
+
+func TestCacheStartBelowOneIsOne(t *testing.T) {
+	c := NewCache[int, []byte](0, 0, bytesOf)
+	if c.Cap() != 1 {
+		t.Fatalf("Cap = %d, want 1", c.Cap())
+	}
+	c.Put(1, blk(1))
+	if _, ok := c.Get(1); !ok {
+		t.Error("a 1 byte value does not fit a 1 byte cache")
+	}
+	c.Put(2, blk(1))
+	if _, ok := c.Get(1); ok {
+		t.Error("the cache did not evict")
+	}
+}
+
+func TestCacheGhostQueueStaleCopyDoesNotForgetAFreshKey(t *testing.T) {
+	c := NewCache[int, []byte](10, 1000, bytesOf)
+	c.ghostCap = 3
+	c.Put(1, blk(10))
+	c.Put(2, blk(10)) // 1 evicted, remembered
+	c.Put(1, blk(10)) // 1 returns: cache grows, ghost entry consumed; 2 evicted? (cap grew to 20, no)
+	c.cap, c.capMax = 10, 10
+	c.Put(3, blk(10)) // evicts the oldest again, then 1 is evicted a second time later
+	c.Put(4, blk(10))
+	c.Put(5, blk(10))
+	c.Put(6, blk(10))
+	for k, seq := range c.ghost {
+		found := false
+		for _, g := range c.ghostQ {
+			found = found || (g.k == k && g.seq == seq)
+		}
+		if !found {
+			t.Errorf("ghost key %d has no matching queue entry", k)
+		}
+	}
+	if len(c.ghostQ) > 3 {
+		t.Errorf("ghost queue grew to %d", len(c.ghostQ))
 	}
 }
