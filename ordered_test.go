@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -215,3 +216,40 @@ func FuzzOrdered(f *testing.F) {
 		}
 	})
 }
+
+// Allocations do not grow with n: the workers and the ring are allocated once
+// per call, nothing per item.
+func TestOrderedAllocsIndependentOfN(t *testing.T) {
+	run := func(n int) float64 {
+		return testing.AllocsPerRun(20, func() {
+			_ = Ordered(context.Background(), n, 4,
+				func(_ context.Context, i int) (int, error) { return i, nil },
+				func(int, int) error { return nil })
+		})
+	}
+	small, large := run(8), run(4096)
+	if large > small+4 {
+		t.Errorf("allocs/call: %v for n=8, %v for n=4096: grows with n", small, large)
+	}
+}
+
+func BenchmarkOrderedSpin(b *testing.B) {
+	for _, items := range []int{32, 128, 1024} {
+		b.Run(itoa(items), func(b *testing.B) {
+			w := runtime.GOMAXPROCS(0)
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = Ordered(context.Background(), items, w,
+					func(_ context.Context, i int) (int, error) {
+						x := i
+						for range 200000 {
+							x = x*1664525 + 1013904223
+						}
+						return x, nil
+					}, func(int, int) error { return nil })
+			}
+		})
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

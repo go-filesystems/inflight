@@ -30,7 +30,8 @@
 // For items known up front rather than requests that arrive, [Ordered] gives
 // the same two properties, bounded and ordered, to any caller: it is the fleet's
 // shared way to run independent work on several cores and keep the output in
-// order.
+// order. When the items write their own output and nothing needs emitting, use
+// [Each]: the same bound on goroutines without Ordered's per-item hand-off.
 //
 // # Bounds
 //

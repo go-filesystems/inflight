@@ -34,6 +34,13 @@ conn.Wait()
   index order from the caller's goroutine, at most `workers` results exist at
   once whatever n is, the first error in index order stops the run, and no
   goroutine outlives the call. Memory is bounded by the workers, not by n.
+  `workers` goroutines are started once and nothing is allocated per item.
+- **Each** (`inflight.Each(ctx, n, workers, work)`): Ordered without the
+  hand-off, for items that write their own output. No result is emitted, so no
+  worker waits for the caller or for an earlier item: one atomic increment per
+  item. Measured on go-compressions/edonr's SumNParallel (16 cores), Ordered's
+  per-item wake-ups cost 14 % of throughput; Each is at parity with a private
+  pool. The lowest-index error stops the run.
 - **FSLock**: the go-filesystems/interface concurrency contract as a lock.
 
 Extracted from go-filesystems/sftp v0.9.0. 100% statement coverage, race
