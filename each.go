@@ -25,8 +25,9 @@ import (
 //
 // Items start in index order, so when item j fails every item below j has
 // already started, and the error returned is the lowest-index one among the
-// items that failed: the same on every run when the failures do not depend on
-// timing. The context given to work is then cancelled and no further item
+// items that failed. That is the same on every run only when work does not
+// itself fail on a cancelled context: such an item may return the run's own
+// stop, which is ignored (below). The context given to work is then cancelled and no further item
 // starts; an item that fails with [context.Canceled] after that cancellation is
 // the run's own stop, not a failure, and is ignored. If ctx is done first, Each
 // returns ctx's error. No goroutine outlives the call. n < 0 or workers < 1
@@ -60,10 +61,11 @@ func Each(ctx context.Context, n, workers int, work func(ctx context.Context, i 
 	}
 	body := func() {
 		for !stopped.Load() && ctx.Err() == nil {
-			i := int(next.Add(1) - 1)
-			if i >= n {
+			c := next.Add(1) - 1
+			if c >= int64(n) {
 				return
 			}
+			i := int(c)
 			if err := work(ctx, i); err != nil {
 				if stopped.Load() && errors.Is(err, context.Canceled) {
 					continue // our own stop reaching an item below the failure

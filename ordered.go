@@ -80,10 +80,11 @@ func Ordered[T any](ctx context.Context, n, workers int, work func(ctx context.C
 				case <-ctx.Done():
 					return
 				}
-				i := int(next.Add(1) - 1)
-				if i >= n {
+				c := next.Add(1) - 1
+				if c >= int64(n) || ctx.Err() != nil {
 					return
 				}
+				i := int(c)
 				v, err := work(ctx, i)
 				ring[i%workers] <- result{v, err}
 			}
