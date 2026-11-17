@@ -41,6 +41,13 @@ conn.Wait()
   item. Measured on go-compressions/edonr's SumNParallel (16 cores), Ordered's
   per-item wake-ups cost 14 % of throughput; Each is at parity with a private
   pool. The lowest-index error stops the run.
+- **Cache** (`inflight.NewCache[K, V](start, max, size)`): the bounded block
+  cache that goes with Ordered when blocks are decoded ahead of the reader.
+  FIFO, bounded in bytes, and it grows (by a sixteenth, up to `max`) only when
+  a key it evicted is asked for again: a sequential pass never grows it, a
+  random read of a file larger than the cache does at once. An entry larger
+  than the bound is not stored. Extracted from go-filesystems/squashfs v0.9.0
+  (#61); zfs uses it for decoded records.
 - **FSLock**: the go-filesystems/interface concurrency contract as a lock.
 
 Extracted from go-filesystems/sftp v0.9.0. 100% statement coverage, race
