@@ -40,6 +40,11 @@ type Cache[K comparable, V any] struct {
 	ghostQ   []ghostEnt[K]
 	ghostSeq uint64
 	ghostCap int
+
+	seen    map[K]uint64 // keys passed to Seen once -> the sequence of that call
+	seenQ   []ghostEnt[K]
+	seenSeq uint64
+	seenCap int
 }
 
 type cacheEntry[V any] struct {
@@ -61,7 +66,7 @@ const DefaultGhostCap = 16384
 func NewCache[K comparable, V any](start, max int64, size func(V) int64) *Cache[K, V] {
 	start = maxInt(start, 1)
 	max = maxInt(max, start)
-	return &Cache[K, V]{size: size, m: make(map[K]cacheEntry[V]), start: start, cap: start, capMax: max, ghostCap: DefaultGhostCap}
+	return &Cache[K, V]{size: size, m: make(map[K]cacheEntry[V]), start: start, cap: start, capMax: max, ghostCap: DefaultGhostCap, seenCap: DefaultSeenCap}
 }
 
 func maxInt(a, b int64) int64 {
@@ -184,4 +189,43 @@ func (c *Cache[K, V]) Cap() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cap
+}
+
+// DefaultSeenCap is how many keys [Cache.Seen] remembers (keys only).
+const DefaultSeenCap = 16384
+
+// Seen is admission on second touch. It reports whether k was passed to Seen
+// before (and not since forgotten), and remembers it if not: the first call
+// for a key returns false, the next returns true and forgets the key, so a
+// caller that Puts only when Seen is true caches what is read twice and never
+// what is read once. A stream read once, however long, then costs no cache
+// memory and no copy. Only keys are kept, at most DefaultSeenCap of them, the
+// oldest forgotten first; a nil *Cache reports false and remembers nothing.
+//
+// It is independent of the entries and of the keys of evicted entries that
+// grow the bound: Seen neither reads nor changes them.
+func (c *Cache[K, V]) Seen(k K) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.seen[k]; ok {
+		delete(c.seen, k)
+		return true
+	}
+	if c.seen == nil {
+		c.seen = make(map[K]uint64)
+	}
+	for len(c.seenQ) >= c.seenCap {
+		g := c.seenQ[0]
+		c.seenQ = c.seenQ[1:]
+		if c.seen[g.k] == g.seq { // not re-added since: forget it
+			delete(c.seen, g.k)
+		}
+	}
+	c.seenSeq++
+	c.seen[k] = c.seenSeq
+	c.seenQ = append(c.seenQ, ghostEnt[K]{k, c.seenSeq})
+	return false
 }
