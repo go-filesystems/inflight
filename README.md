@@ -47,7 +47,11 @@ conn.Wait()
   a key it evicted is asked for again: a sequential pass never grows it, a
   random read of a file larger than the cache does at once. An entry larger
   than the bound is not stored. Extracted from go-filesystems/squashfs v0.9.0
-  (#61); zfs uses it for decoded records.
+  (#61); zfs uses it for decoded records. `Cache.Seen(key)` is admission on
+  second touch: false the first time a key is passed (only the key is
+  remembered, at most 16384 of them), true the second time, so a caller that
+  `Put`s only when it is true caches what is read twice and spends nothing on
+  a stream read once.
 - **FSLock**: the go-filesystems/interface concurrency contract as a lock.
 
 Extracted from go-filesystems/sftp v0.9.0. 100% statement coverage, race
