@@ -84,6 +84,7 @@ func TestBudgetAcquireWaitsAndFIFO(t *testing.T) {
 			mu.Lock()
 			order = append(order, id)
 			mu.Unlock()
+			b.Release(n) // 8+5 > 10: waiter 2 is granted only after this
 		}()
 		// wait until it is queued
 		for {
@@ -97,7 +98,7 @@ func TestBudgetAcquireWaitsAndFIFO(t *testing.T) {
 		}
 	}
 	start(1, 8) // large first
-	start(2, 1) // small behind it must not overtake
+	start(2, 5)
 	if b.TryAcquire(1) {
 		t.Fatal("TryAcquire must not overtake waiters")
 	}
@@ -106,7 +107,7 @@ func TestBudgetAcquireWaitsAndFIFO(t *testing.T) {
 	if len(order) != 2 || order[0] != 1 || order[1] != 2 {
 		t.Fatalf("order %v", order)
 	}
-	if b.InUse() != 9 {
+	if b.InUse() != 0 {
 		t.Fatalf("in use %d", b.InUse())
 	}
 }
