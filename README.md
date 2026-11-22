@@ -52,6 +52,18 @@ conn.Wait()
   remembered, at most 16384 of them), true the second time, so a caller that
   `Put`s only when it is true caches what is read twice and spends nothing on
   a stream read once.
+- **Server limits** (`limits.go`), for the part of a network server that runs
+  before any request is bounded:
+  - `Budget` (`NewBudget(total)`, `Acquire(ctx, n)`, `TryAcquire(n)`,
+    `Release(n)`): a byte budget, a weighted semaphore served in arrival order.
+    `n > total` returns `ErrExceedsBudget` instead of waiting forever; a
+    cancelled wait holds nothing; releasing more than held panics.
+  - `Gate` (`NewGate(max)`, `TryEnter`, `Leave`; `NewKeyGate(max, perKey)`,
+    `TryEnterKey(key)`, `LeaveKey(key)`): a cap on slots held at once, for
+    example connections not yet authenticated, optionally per source address.
+    Never blocks: the caller refuses the connection.
+  - `WithDeadline(conn, d, f)`: sets the connection's deadline, runs `f` (an
+    SSH `NewServerConn`, a TLS handshake), and clears the deadline after.
 - **FSLock**: the go-filesystems/interface concurrency contract as a lock.
 
 Extracted from go-filesystems/sftp v0.9.0. 100% statement coverage, race
