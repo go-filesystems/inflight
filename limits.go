@@ -7,7 +7,6 @@ import (
 	"container/list"
 	"context"
 	"errors"
-	"net"
 	"sync"
 	"time"
 )
@@ -238,12 +237,20 @@ func (g *Gate) Held() int {
 	return g.held
 }
 
+// Deadliner is what WithDeadline needs of a connection; every net.Conn is one.
+// It is declared here, rather than taking a net.Conn, so that this package
+// does not import net (govulncheck's SSA build of net panics on CI, and a
+// package of bounds has no other use for it).
+type Deadliner interface {
+	SetDeadline(t time.Time) error
+}
+
 // WithDeadline sets conn's read and write deadline to d from now, runs f, and
 // clears the deadline afterwards, so a handshake (for example ssh.NewServerConn)
 // cannot be held open by a silent peer yet the established connection has no
 // deadline left behind. It returns f's error, or the error of clearing the
 // deadline when f succeeded. d must be positive.
-func WithDeadline(conn net.Conn, d time.Duration, f func() error) error {
+func WithDeadline(conn Deadliner, d time.Duration, f func() error) error {
 	if d <= 0 {
 		return ErrBadDeadline
 	}
