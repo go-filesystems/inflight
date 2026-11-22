@@ -144,24 +144,24 @@ func (b *Budget) wake() {
 // held per key (a source address).
 type Gate struct {
 	mu     sync.Mutex
-	max    int
+	slots  int
 	held   int
 	perKey int
 	keys   map[string]int
 }
 
 // NewGate makes a gate of max slots; max below 1 is raised to 1.
-func NewGate(max int) *Gate {
-	if max < 1 {
-		max = 1
+func NewGate(slots int) *Gate {
+	if slots < 1 {
+		slots = 1
 	}
-	return &Gate{max: max}
+	return &Gate{slots: slots}
 }
 
 // NewKeyGate makes a gate of max slots in all and at most perKey per key; both
 // are raised to 1 when smaller.
-func NewKeyGate(max, perKey int) *Gate {
-	g := NewGate(max)
+func NewKeyGate(slots, perKey int) *Gate {
+	g := NewGate(slots)
 	if perKey < 1 {
 		perKey = 1
 	}
@@ -175,7 +175,7 @@ func NewKeyGate(max, perKey int) *Gate {
 func (g *Gate) TryEnter() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.held >= g.max {
+	if g.held >= g.slots {
 		return false
 	}
 	g.held++
@@ -199,7 +199,7 @@ func (g *Gate) Leave() {
 func (g *Gate) TryEnterKey(key string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.held >= g.max {
+	if g.held >= g.slots {
 		return false
 	}
 	if g.keys != nil {

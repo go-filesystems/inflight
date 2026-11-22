@@ -297,7 +297,7 @@ func TestGate(t *testing.T) {
 	}
 	g.Leave()
 	g.Leave()
-	if NewGate(0).max != 1 {
+	if NewGate(0).slots != 1 {
 		t.Fatal("floor")
 	}
 	func() {
