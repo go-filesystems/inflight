@@ -48,10 +48,10 @@ func TestBudgetBasics(t *testing.T) {
 
 func TestBudgetErrors(t *testing.T) {
 	b := NewBudget(10)
-	if err := b.Acquire(tctx(t), 11);!errors.Is(err, ErrExceedsBudget) {
+	if err := b.Acquire(tctx(t), 11); !errors.Is(err, ErrExceedsBudget) {
 		t.Fatalf("n>total: %v", err)
 	}
-	if err := b.Acquire(tctx(t), -1);!errors.Is(err, ErrExceedsBudget) {
+	if err := b.Acquire(tctx(t), -1); !errors.Is(err, ErrExceedsBudget) {
 		t.Fatalf("n<0: %v", err)
 	}
 	if b.TryAcquire(11) || b.TryAcquire(-1) {
@@ -215,7 +215,9 @@ func TestBudgetCancelledContextNoRoom(t *testing.T) {
 func TestBudgetGrantCancelRace(t *testing.T) {
 	for i := 0; i < 300; i++ {
 		b := NewBudget(1)
-		_ = b.Acquire(context.Background(), 1)
+		if err := b.Acquire(tctx(t), 1); err != nil {
+			t.Fatal(err)
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		res := make(chan error, 1)
 		go func() { res <- b.Acquire(ctx, 1) }()
@@ -481,8 +483,10 @@ func TestBudgetGrantedWhileCancelled(t *testing.T) {
 	sawGrant, sawCancel := false, false
 	for i := 0; i < 200 && !(sawGrant && sawCancel); i++ {
 		b := NewBudget(1)
-		_ = b.Acquire(context.Background(), 1)
-		err := b.Acquire(&grantingCtx{Context: context.Background(), b: b}, 1)
+		if err := b.Acquire(tctx(t), 1); err != nil {
+			t.Fatal(err)
+		}
+		err := b.Acquire(&grantingCtx{Context: tctx(t), b: b}, 1)
 		if err == nil {
 			sawGrant = true
 			if b.InUse() != 1 {

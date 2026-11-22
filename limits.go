@@ -127,11 +127,7 @@ func (b *Budget) Release(n int64) {
 
 // wake grants, in order, every waiter at the head that now fits. b.mu held.
 func (b *Budget) wake() {
-	for {
-		el := b.waiters.Front()
-		if el == nil {
-			return
-		}
+	for el := b.waiters.Front(); el != nil; el = b.waiters.Front() {
 		w := el.Value.(*waiter)
 		if b.used+w.n > b.total {
 			return
