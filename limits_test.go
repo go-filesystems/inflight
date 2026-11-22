@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+// tctx is a context that expires, so that a wait that should not happen (a
+// refusal or fast path removed from Budget) fails a test by an assertion
+// instead of hanging the suite.
+func tctx(t *testing.T) context.Context {
+	t.Helper()
+	c, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+	return c
+}
+
 func TestBudgetBasics(t *testing.T) {
 	b := NewBudget(10)
 	if b.Total() != 10 {
@@ -38,10 +48,10 @@ func TestBudgetBasics(t *testing.T) {
 
 func TestBudgetErrors(t *testing.T) {
 	b := NewBudget(10)
-	if err := b.Acquire(context.Background(), 11); !errors.Is(err, ErrExceedsBudget) {
+	if err := b.Acquire(tctx(t), 11);!errors.Is(err, ErrExceedsBudget) {
 		t.Fatalf("n>total: %v", err)
 	}
-	if err := b.Acquire(context.Background(), -1); !errors.Is(err, ErrExceedsBudget) {
+	if err := b.Acquire(tctx(t), -1);!errors.Is(err, ErrExceedsBudget) {
 		t.Fatalf("n<0: %v", err)
 	}
 	if b.TryAcquire(11) || b.TryAcquire(-1) {
@@ -67,7 +77,7 @@ func TestBudgetErrors(t *testing.T) {
 
 func TestBudgetAcquireWaitsAndFIFO(t *testing.T) {
 	b := NewBudget(10)
-	if err := b.Acquire(context.Background(), 10); err != nil {
+	if err := b.Acquire(tctx(t), 10); err != nil {
 		t.Fatal(err)
 	}
 	var order []int
@@ -77,7 +87,7 @@ func TestBudgetAcquireWaitsAndFIFO(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := b.Acquire(context.Background(), n); err != nil {
+			if err := b.Acquire(tctx(t), n); err != nil {
 				t.Error(err)
 				return
 			}
@@ -114,7 +124,9 @@ func TestBudgetAcquireWaitsAndFIFO(t *testing.T) {
 
 func TestBudgetCancel(t *testing.T) {
 	b := NewBudget(10)
-	_ = b.Acquire(context.Background(), 10)
+	if err := b.Acquire(tctx(t), 10); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- b.Acquire(ctx, 5) }()
@@ -143,7 +155,9 @@ func TestBudgetCancel(t *testing.T) {
 // A cancelled head waiter must unblock the one behind it that now fits.
 func TestBudgetCancelHeadWakesNext(t *testing.T) {
 	b := NewBudget(10)
-	_ = b.Acquire(context.Background(), 6)
+	if err := b.Acquire(tctx(t), 6); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	head := make(chan error, 1)
 	go func() { head <- b.Acquire(ctx, 8) }() // does not fit, heads the queue
@@ -157,7 +171,8 @@ func TestBudgetCancelHeadWakesNext(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	next := make(chan error, 1)
-	go func() { next <- b.Acquire(context.Background(), 2) }() // fits, but behind
+	nctx := tctx(t)
+	go func() { next <- b.Acquire(nctx, 2) }() // fits, but behind
 	for {
 		b.mu.Lock()
 		l := b.waiters.Len()
@@ -183,7 +198,9 @@ func TestBudgetCancelHeadWakesNext(t *testing.T) {
 // context done with no room returns the error with nothing held.
 func TestBudgetCancelledContextNoRoom(t *testing.T) {
 	b := NewBudget(1)
-	_ = b.Acquire(context.Background(), 1)
+	if err := b.Acquire(tctx(t), 1); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := b.Acquire(ctx, 1); !errors.Is(err, context.Canceled) {
@@ -239,7 +256,7 @@ func TestBudgetConcurrentExact(t *testing.T) {
 					if !b.TryAcquire(n) {
 						continue
 					}
-				} else if err := b.Acquire(context.Background(), n); err != nil {
+				} else if err := b.Acquire(tctx(t), n); err != nil {
 					t.Error(err)
 					return
 				}
